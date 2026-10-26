@@ -1,3 +1,5 @@
+
+
 import React, { useEffect, useState } from 'react'
 import {
   ActivityIndicator,
@@ -14,6 +16,7 @@ import {
   View,
 } from 'react-native'
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
+import DateTimePicker from '@react-native-community/datetimepicker'
 import Svg, { Circle, Line, Path, Rect } from 'react-native-svg'
 import {
   useFonts,
@@ -23,9 +26,12 @@ import {
   PlusJakartaSans_700Bold,
   PlusJakartaSans_800ExtraBold,
 } from '@expo-google-fonts/plus-jakarta-sans'
-import { onAuthStateChanged, signOut } from 'firebase/auth'
+import { onAuthStateChanged, signOut, updateProfile } from 'firebase/auth'
+import { getFirestore, collection, onSnapshot, addDoc, doc, runTransaction, updateDoc, deleteDoc, setDoc } from 'firebase/firestore'
 import { auth } from './firebaseConfig'
 import AuthScreen from './AuthScreen'
+
+const db = getFirestore(auth.app)
 
 const C = {
   navy: '#0E1F38',
@@ -40,38 +46,28 @@ const C = {
 
 const categories = ['All', 'Sports', 'Academic', 'Social', 'Creative', 'Wellness']
 
-const initialActivities = [
-  {
-    id: '1', title: 'Campus Soccer', category: 'Sports',
-    host: 'Campus Recreation', location: 'Recreation Center',
-    time: 'Friday at 5:00 PM',
-    description: 'Kick off the weekend with a casual soccer game. Everyone is welcome, no matter your experience.',
-  },
-  {
-    id: '2', title: 'Study Group', category: 'Academic',
-    host: 'Study Circle', location: 'University Library',
-    time: 'Monday at 2:00 PM',
-    description: 'Get together, share notes, and make studying a little less stressful.',
-  },
-  {
-    id: '3', title: 'Campus Game Night', category: 'Social',
-    host: 'Student Community', location: 'Student Union',
-    time: 'Saturday at 6:00 PM',
-    description: 'Board games, friendly competition, and a chance to meet new people.',
-  },
-  {
-    id: '4', title: 'Creative Meetup', category: 'Creative',
-    host: 'Creative Collective', location: 'Art Building',
-    time: 'Thursday at 4:00 PM',
-    description: 'Bring a sketchbook, a project, or just your ideas. Create something together.',
-  },
-  {
-    id: '5', title: 'Campus Wellness Walk', category: 'Wellness',
-    host: 'Campus Wellness', location: 'Campus Green',
-    time: 'Wednesday at 9:00 AM',
-    description: 'Take a break and meet other students on a laid-back walk around campus.',
-  },
-]
+function dateLabel(value) {
+  return value.toLocaleString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  })
+}
+
+function sortedActivities(items) {
+  const now = Date.now()
+  return [...items].sort((a, b) => {
+    const aDate = Number.isFinite(a.startsAt) ? a.startsAt : null
+    const bDate = Number.isFinite(b.startsAt) ? b.startsAt : null
+    const aGroup = aDate === null ? 2 : aDate >= now ? 0 : 1
+    const bGroup = bDate === null ? 2 : bDate >= now ? 0 : 1
+    if (aGroup !== bGroup) return aGroup - bGroup
+    if (aDate !== null && bDate !== null) {
+      return aGroup === 1 ? bDate - aDate : aDate - bDate
+    }
+    return 0
+  })
+}
+
 
 const categoryTheme = {
   Sports: { bg: '#DCEBFF', accent: '#1F61D1', icon: 'activity' },
@@ -136,7 +132,8 @@ function CategoryPill({ name, selected, onPress }) {
 function ActivityCard({ activity, joined, saved, liked, onJoin, onSave, onLike, onDetails }) {
   const theme = categoryTheme[activity.category] || categoryTheme.Social
   return (
-    <View style={styles.eventCard}>
+    <Pressable onPress={onDetails} accessibilityRole="button" accessibilityLabel={`View details for ${activity.title}`}
+      style={({ pressed }) => [styles.eventCard, pressed && styles.pressed]}>
       <View style={styles.eventTop}>
         <View style={[styles.hostAvatar, { backgroundColor: theme.bg }]}>
           <Icon name={theme.icon} size={21} color={theme.accent} />
@@ -151,7 +148,7 @@ function ActivityCard({ activity, joined, saved, liked, onJoin, onSave, onLike, 
         </Pressable>
       </View>
 
-      <Pressable onPress={onDetails} style={({ pressed }) => [pressed && styles.pressed]}>
+      <View>
         <View style={[styles.eventArtwork, { backgroundColor: theme.bg }]}>
           <View style={[styles.artCircleLarge, { borderColor: theme.accent }]} />
           <View style={[styles.artCircleSmall, { backgroundColor: theme.accent }]} />
@@ -162,7 +159,7 @@ function ActivityCard({ activity, joined, saved, liked, onJoin, onSave, onLike, 
             <Text style={[styles.artTagText, { color: theme.accent }]}>{activity.category}</Text>
           </View>
         </View>
-      </Pressable>
+      </View>
 
       <View style={styles.eventBody}>
         <View style={styles.eventActions}>
@@ -180,10 +177,13 @@ function ActivityCard({ activity, joined, saved, liked, onJoin, onSave, onLike, 
             styles.miniJoinButton, joined && styles.miniJoinedButton, pressed && styles.pressed,
           ]}>
             <Icon name={joined ? 'check' : 'plus'} size={16} color={joined ? C.green : C.white} />
-            <Text style={[styles.miniJoinText, joined && { color: C.green }]}>{joined ? 'Joined' : 'Join'}</Text>
+            <Text style={[styles.miniJoinText, joined && { color: C.green }]}>{joined ? 'Joined' : (!activity.demo && Number.isInteger(activity.maxParticipants) && Object.keys(activity.participants || {}).length >= activity.maxParticipants ? 'Full' : 'Join')}</Text>
           </Pressable>
         </View>
         <Text style={styles.eventTitle}>{activity.title}</Text>
+        {!activity.demo && <Text style={styles.capacityCard}>{Number.isInteger(activity.maxParticipants) && activity.maxParticipants > 0
+          ? `${Object.keys(activity.participants || {}).length}/${activity.maxParticipants} spots filled`
+          : `${Object.keys(activity.participants || {}).length} participants`}</Text>}
         <Text style={styles.eventDescription} numberOfLines={2}>{activity.description}</Text>
         <View style={styles.eventMeta}>
           <Icon name="pin" size={15} color={C.gray} />
@@ -194,6 +194,26 @@ function ActivityCard({ activity, joined, saved, liked, onJoin, onSave, onLike, 
           <Text style={styles.metaText}>{activity.time}</Text>
         </View>
       </View>
+    </Pressable>
+  )
+}
+
+function LoadingNotice({ message }) {
+  return (
+    <View style={styles.loadingNotice}>
+      <ActivityIndicator color={C.blue} size="small" />
+      <Text style={styles.loadingNoticeText}>{message}</Text>
+    </View>
+  )
+}
+
+function LoadProblem({ message, onRetry }) {
+  return (
+    <View style={styles.loadProblem}>
+      <Text style={styles.loadProblemText}>{message}</Text>
+      <Pressable onPress={onRetry} style={styles.retryButton}>
+        <Text style={styles.retryText}>Try again</Text>
+      </Pressable>
     </View>
   )
 }
@@ -230,11 +250,23 @@ export default function App() {
   const [user, setUser] = useState(null)
   const [checkingAuth, setCheckingAuth] = useState(true)
   const [tab, setTab] = useState('Home')
-  const [activities, setActivities] = useState(initialActivities)
-  const [joined, setJoined] = useState([])
+  const [demoJoined, setDemoJoined] = useState([])
+  const [cloudActivities, setCloudActivities] = useState([])
+  const [busyActivity, setBusyActivity] = useState(null)
+  const [cloudError, setCloudError] = useState('')
+  const [activitiesLoading, setActivitiesLoading] = useState(true)
+  const [profileLoading, setProfileLoading] = useState(true)
+  const [preferencesError, setPreferencesError] = useState('')
+  const [profileLoadError, setProfileLoadError] = useState('')
+  const [reloadKey, setReloadKey] = useState(0)
+  const [creatingActivity, setCreatingActivity] = useState(false)
+  const [busyPreference, setBusyPreference] = useState(null)
   const [saved, setSaved] = useState([])
   const [liked, setLiked] = useState([])
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false)
   const [category, setCategory] = useState('All')
+  const [dateFilter, setDateFilter] = useState('Upcoming')
+  const [availabilityFilter, setAvailabilityFilter] = useState('All spots')
   const [search, setSearch] = useState('')
   const [activityView, setActivityView] = useState('Joined')
   const [selectedEvent, setSelectedEvent] = useState(null)
@@ -242,22 +274,229 @@ export default function App() {
   const [newCategory, setNewCategory] = useState('Social')
   const [newLocation, setNewLocation] = useState('')
   const [newTime, setNewTime] = useState('')
+  const [newDate, setNewDate] = useState(() => new Date(Date.now() + 86400000))
+  const [createPicker, setCreatePicker] = useState(null)
   const [newDescription, setNewDescription] = useState('')
+  const [newCapacity, setNewCapacity] = useState('10')
   const [createError, setCreateError] = useState('')
+  const [editingEvent, setEditingEvent] = useState(null)
+  const [editTitle, setEditTitle] = useState('')
+  const [editCategory, setEditCategory] = useState('Social')
+  const [editLocation, setEditLocation] = useState('')
+  const [editTime, setEditTime] = useState('')
+  const [editDate, setEditDate] = useState(() => new Date(Date.now() + 86400000))
+  const [editPicker, setEditPicker] = useState(null)
+  const [editDescription, setEditDescription] = useState('')
+  const [editCapacity, setEditCapacity] = useState('10')
+  const [editError, setEditError] = useState('')
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [profile, setProfile] = useState({})
+  const [editingProfile, setEditingProfile] = useState(false)
+  const [profileName, setProfileName] = useState('')
+  const [profileUniversity, setProfileUniversity] = useState('')
+  const [profileMajor, setProfileMajor] = useState('')
+  const [profileBio, setProfileBio] = useState('')
+  const [profileError, setProfileError] = useState('')
+  const [savingProfile, setSavingProfile] = useState(false)
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser)
       setCheckingAuth(false)
       setTab('Home')
-      setActivities(initialActivities)
-      setJoined([])
+      setDemoJoined([])
+      setCloudActivities([])
+      setActivitiesLoading(true)
+      setCloudError('')
+      setProfileLoading(true)
+      setProfileLoadError('')
+      setPreferencesError('')
       setSaved([])
       setLiked([])
+      setPreferencesLoaded(false)
       setSelectedEvent(null)
+      setEditingEvent(null)
+      setEditingProfile(false)
+      setProfile({})
     })
     return unsubscribe
   }, [])
+
+  useEffect(() => {
+    if (!user) return
+    setActivitiesLoading(true)
+    const stop = onSnapshot(collection(db, 'activities'), (snapshot) => {
+      setCloudActivities(snapshot.docs.map((item) => ({ ...item.data(), id: item.id })))
+      setCloudError('')
+      setActivitiesLoading(false)
+    }, (error) => {
+      setCloudError('Could not load shared activities. Check that Firestore is enabled and its rules allow signed-in users to read activities.')
+      console.log('Firestore activities error:', error.message)
+      setActivitiesLoading(false)
+    })
+    return stop
+  }, [user?.uid, reloadKey])
+
+  useEffect(() => {
+    if (!user?.uid) return
+    setProfileLoading(true)
+    const stop = onSnapshot(doc(db, 'users', user.uid), (snapshot) => {
+      setProfile(snapshot.exists() ? snapshot.data() : {})
+      setProfileLoadError('')
+      setProfileLoading(false)
+    }, (error) => {
+      console.log('Load profile error:', error.message)
+      setProfileLoadError('Unable to load your profile. Check your connection and try again.')
+      setProfileLoading(false)
+    })
+    return stop
+  }, [user?.uid, reloadKey])
+
+  useEffect(() => {
+    if (!user?.uid) return
+    const reference = doc(db, 'users', user.uid, 'preferences', 'activityInteractions')
+    setPreferencesLoaded(false)
+    const stop = onSnapshot(reference, (snapshot) => {
+      const data = snapshot.exists() ? snapshot.data() : {}
+      setSaved(Array.isArray(data.saved) ? data.saved : [])
+      setLiked(Array.isArray(data.liked) ? data.liked : [])
+      setPreferencesLoaded(true)
+      setPreferencesError('')
+    }, (error) => {
+      console.log('Load saved activities error:', error.message)
+      setPreferencesLoaded(false)
+      setPreferencesError('Unable to load saved activities and likes.')
+    })
+    return stop
+  }, [user?.uid, reloadKey])
+
+  function retryLoading() {
+    setCloudError('')
+    setPreferencesError('')
+    setProfileLoadError('')
+    setReloadKey((value) => value + 1)
+  }
+
+  async function togglePreference(kind, activityId) {
+    if (!user || !preferencesLoaded) {
+      Alert.alert('Loading', 'Your saved activities are still loading. Please try again.')
+      return
+    }
+    if (busyPreference) return
+    setBusyPreference(`${kind}:${activityId}`)
+    try {
+      const reference = doc(db, 'users', user.uid, 'preferences', 'activityInteractions')
+      await runTransaction(db, async (transaction) => {
+        const snapshot = await transaction.get(reference)
+        const data = snapshot.exists() ? snapshot.data() : {}
+        const existing = Array.isArray(data[kind]) ? data[kind] : []
+        const updated = existing.includes(activityId)
+          ? existing.filter((id) => id !== activityId)
+          : [...existing, activityId]
+        if (updated.length > 500) throw new Error('You have reached the 500-activity limit.')
+        transaction.set(reference, { saved: [], liked: [], ...data, [kind]: updated })
+      })
+    } catch (error) {
+      console.log('Save preference error:', error.message)
+      Alert.alert('Unable to save', 'Your changes could not be saved. Please try again.')
+    } finally {
+      setBusyPreference(null)
+    }
+  }
+
+  function openProfileEditor() {
+    setProfileName(profile.displayName || user.displayName || '')
+    setProfileUniversity(profile.university || '')
+    setProfileMajor(profile.major || '')
+    setProfileBio(profile.bio || '')
+    setProfileError('')
+    setEditingProfile(true)
+  }
+
+  async function saveProfile() {
+    if (savingProfile || !user) return
+    const name = profileName.trim()
+    if (!name || name.length > 80) {
+      setProfileError('Enter a name (up to 80 characters).')
+      return
+    }
+    setSavingProfile(true)
+    setProfileError('')
+    try {
+      await setDoc(doc(db, 'users', user.uid), {
+        displayName: name,
+        university: profileUniversity.trim(),
+        major: profileMajor.trim(),
+        bio: profileBio.trim(),
+      }, { merge: true })
+      try {
+        await updateProfile(user, { displayName: name })
+      } catch (authError) {
+        console.log('Auth display name update:', authError.message)
+      }
+      setEditingProfile(false)
+      Alert.alert('Profile saved', 'Your changes are saved in Firebase.')
+    } catch (error) {
+      console.log('Save profile error:', error.message)
+      setProfileError('Could not save your profile. Check the Firestore users rules.')
+    } finally {
+      setSavingProfile(false)
+    }
+  }
+
+  const activities = sortedActivities(cloudActivities)
+  const joined = activities.filter((item) => item.demo
+    ? demoJoined.includes(item.id)
+    : Boolean(item.participants?.[user?.uid])).map((item) => item.id)
+
+  function participantsFor(activity) {
+    if (!activity) return []
+    if (activity.demo) return demoJoined.includes(activity.id)
+      ? [{ uid: user.uid, name: profile.displayName || user.displayName || user.email?.split('@')[0] || 'Student' }] : []
+    return Object.entries(activity.participants || {}).map(([uid, name]) => ({ uid, name }))
+  }
+
+  function capacityFor(activity) {
+    return Number.isInteger(activity?.maxParticipants) && activity.maxParticipants > 0
+      ? activity.maxParticipants : null
+  }
+
+  function spotsText(activity) {
+    const count = Object.keys(activity?.participants || {}).length
+    const limit = capacityFor(activity)
+    return limit ? `${count}/${limit} spots filled` : `${count} participants`
+  }
+
+  async function handleJoin(activity) {
+    if (activity.demo) {
+      toggle(setDemoJoined, activity.id)
+      return
+    }
+    if (busyActivity) return
+    setBusyActivity(activity.id)
+    try {
+      const reference = doc(db, 'activities', activity.id)
+      await runTransaction(db, async (transaction) => {
+        const current = await transaction.get(reference)
+        if (!current.exists()) throw new Error('This activity no longer exists.')
+        const participants = { ...(current.data().participants || {}) }
+        if (participants[user.uid]) {
+          delete participants[user.uid]
+        } else {
+          const limit = capacityFor(current.data())
+          if (limit && Object.keys(participants).length >= limit) {
+            throw new Error('This activity is full.')
+          }
+          participants[user.uid] = profile.displayName || user.displayName || user.email?.split('@')[0] || 'Student'
+        }
+        transaction.update(reference, { participants })
+      })
+    } catch (error) {
+      Alert.alert('Unable to update activity', error.message || 'Please try again.')
+    } finally {
+      setBusyActivity(null)
+    }
+  }
 
   function toggle(setter, id) {
     setter((items) => items.includes(id)
@@ -270,12 +509,16 @@ export default function App() {
     setTab(nextTab)
     setSearch('')
     setCategory('All')
+    setDateFilter('Upcoming')
+    setAvailabilityFilter('All spots')
   }
 
   function exploreCategory(name) {
     setTab('Explore')
     setCategory(name)
     setSearch('')
+    setDateFilter('Upcoming')
+    setAvailabilityFilter('All spots')
   }
 
   async function handleSignOut() {
@@ -286,9 +529,20 @@ export default function App() {
     }
   }
 
-  function handleCreate() {
-    if (!newTitle.trim() || !newLocation.trim() || !newTime.trim() || !newDescription.trim()) {
+  async function handleCreate() {
+    if (creatingActivity) return
+    if (!newTitle.trim() || !newLocation.trim() || !newDescription.trim()) {
       setCreateError('Fill in every field to create your activity.')
+      return
+    }
+
+    if (newDate.getTime() <= Date.now()) {
+      setCreateError('Choose a future date and time.')
+      return
+    }
+    const capacity = Number(newCapacity)
+    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 100) {
+      setCreateError('Maximum participants must be a number from 1 to 100.')
       return
     }
 
@@ -298,20 +552,112 @@ export default function App() {
       category: newCategory,
       host: user?.displayName || user?.email?.split('@')[0] || 'Student',
       location: newLocation.trim(),
-      time: newTime.trim(),
+      time: dateLabel(newDate),
+      startsAt: newDate.getTime(),
       description: newDescription.trim(),
       createdBy: user?.uid,
     }
 
-    setActivities((items) => [activity, ...items])
+    setCreatingActivity(true)
+    try {
+      await addDoc(collection(db, 'activities'), {
+        title: activity.title, category: activity.category, host: activity.host,
+        location: activity.location, time: activity.time, startsAt: activity.startsAt, description: activity.description,
+        createdBy: user.uid, participants: {}, createdAt: Date.now(),
+        maxParticipants: capacity,
+      })
+    } catch (error) {
+      setCreateError('Unable to save to Firestore. Check Firestore setup and permissions.')
+      console.log('Create activity error:', error.message)
+      return
+    } finally {
+      setCreatingActivity(false)
+    }
     setNewTitle('')
     setNewLocation('')
     setNewTime('')
+    setNewDate(new Date(Date.now() + 86400000))
     setNewDescription('')
     setNewCategory('Social')
+    setNewCapacity('10')
     setCreateError('')
     setTab('Home')
-    Alert.alert('Activity created', 'Your demo activity is ready! Cloud saving comes in the next step.')
+    Alert.alert('Activity created', 'Your activity is now shared with other students.')
+  }
+
+  function openEdit(activity) {
+    if (!activity || activity.demo || activity.createdBy !== user.uid) return
+    setSelectedEvent(null)
+    setEditingEvent(activity)
+    setEditTitle(activity.title)
+    setEditCategory(activity.category)
+    setEditLocation(activity.location)
+    setEditTime(activity.time)
+    setEditDate(Number.isFinite(activity.startsAt) ? new Date(activity.startsAt) : new Date(Date.now() + 86400000))
+    setEditDescription(activity.description)
+    setEditCapacity(String(capacityFor(activity) || 10))
+    setEditError('')
+  }
+
+  async function saveEdit() {
+    if (!editingEvent || savingEdit || editingEvent.createdBy !== user.uid) return
+    if (!editTitle.trim() || !editLocation.trim() || !editDescription.trim()) {
+      setEditError('Please fill in all fields.')
+      return
+    }
+    if (editDate.getTime() <= Date.now()) {
+      setEditError('Choose a future date and time.')
+      return
+    }
+    const capacity = Number(editCapacity)
+    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 100) {
+      setEditError('Maximum participants must be from 1 to 100.')
+      return
+    }
+    const latest = cloudActivities.find((item) => item.id === editingEvent.id)
+    const numberJoined = Object.keys(latest?.participants || {}).length
+    if (capacity < numberJoined) {
+      setEditError(`There are already ${numberJoined} participants. Choose a higher limit.`)
+      return
+    }
+    setSavingEdit(true)
+    try {
+      await updateDoc(doc(db, 'activities', editingEvent.id), {
+        title: editTitle.trim(), category: editCategory,
+        location: editLocation.trim(), time: dateLabel(editDate), startsAt: editDate.getTime(),
+        description: editDescription.trim(), maxParticipants: capacity,
+      })
+      setEditingEvent(null)
+      Alert.alert('Saved', 'Your activity has been updated.')
+    } catch (error) {
+      setEditError(error.code === 'permission-denied'
+        ? 'Firestore rules do not allow editing yet.'
+        : 'Unable to save changes. Please try again.')
+      console.log('Edit activity error:', error.message)
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
+  function confirmDelete(activity) {
+    if (!activity || activity.demo || activity.createdBy !== user.uid || savingEdit) return
+    Alert.alert('Delete activity?', `Delete "${activity.title}" for everyone? This cannot be undone.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: async () => {
+        setSavingEdit(true)
+        try {
+          await deleteDoc(doc(db, 'activities', activity.id))
+          setSelectedEvent(null)
+          setEditingEvent(null)
+          Alert.alert('Deleted', 'Your activity has been removed.')
+        } catch (error) {
+          Alert.alert('Unable to delete', error.code === 'permission-denied'
+            ? 'Firestore rules do not allow deleting yet.' : 'Please try again.')
+        } finally {
+          setSavingEdit(false)
+        }
+      } },
+    ])
   }
 
   if (!fontsLoaded || checkingAuth) {
@@ -322,18 +668,31 @@ export default function App() {
     return <SafeAreaProvider><AuthScreen /></SafeAreaProvider>
   }
 
-  const firstName = user.displayName?.trim().split(' ')[0]
-    || user.email?.split('@')[0] || 'Student'
-  const fullName = user.displayName || 'CampusLink Student'
+  const fullName = profile.displayName || user.displayName || 'CampusLink Student'
+  const firstName = fullName.trim().split(' ')[0] || user.email?.split('@')[0] || 'Student'
   const visibleActivities = activities.filter((item) => {
     const matchesCategory = category === 'All' || item.category === category
     const content = [item.title, item.description, item.location, item.host].join(' ').toLowerCase()
-    return matchesCategory && content.includes(search.trim().toLowerCase())
+    const matchesSearch = content.includes(search.trim().toLowerCase())
+    const eventTime = typeof item.startsAt === 'number' && Number.isFinite(item.startsAt)
+      ? item.startsAt : null
+    const now = Date.now()
+    const matchesDate = dateFilter === 'All dates'
+      || (dateFilter === 'Upcoming' && eventTime !== null && eventTime >= now)
+      || (dateFilter === 'Past' && eventTime !== null && eventTime < now)
+      || (dateFilter === 'No date' && eventTime === null)
+    const max = Number.isInteger(item.maxParticipants) && item.maxParticipants > 0
+      ? item.maxParticipants : null
+    const participantCount = Object.keys(item.participants || {}).length
+    const hasSpots = max === null || participantCount < max || joined.includes(item.id)
+    const matchesAvailability = availabilityFilter === 'All spots' || hasSpots
+    return matchesCategory && matchesSearch && matchesDate && matchesAvailability
   })
   const myActivities = activities.filter((item) => (
-    activityView === 'Joined' ? joined.includes(item.id) : saved.includes(item.id)
+    activityView === 'Joined' ? joined.includes(item.id) : activityView === 'Created' ? item.createdBy === user.uid : saved.includes(item.id)
   ))
   const createdCount = activities.filter((item) => item.createdBy === user.uid).length
+  const validSavedCount = activities.filter((item) => saved.includes(item.id)).length
 
   function cardFor(activity) {
     return <ActivityCard
@@ -342,9 +701,9 @@ export default function App() {
       joined={joined.includes(activity.id)}
       saved={saved.includes(activity.id)}
       liked={liked.includes(activity.id)}
-      onJoin={() => toggle(setJoined, activity.id)}
-      onSave={() => toggle(setSaved, activity.id)}
-      onLike={() => toggle(setLiked, activity.id)}
+      onJoin={() => handleJoin(activity)}
+      onSave={() => togglePreference('saved', activity.id)}
+      onLike={() => togglePreference('liked', activity.id)}
       onDetails={() => setSelectedEvent(activity)}
     />
   }
@@ -408,8 +767,12 @@ export default function App() {
                 </View>
                 <Pressable onPress={() => navigate('Explore')}><Text style={styles.seeAll}>See all</Text></Pressable>
               </View>
-              {activities.slice(0, 3).map(cardFor)}
-              <Text style={styles.demoNote}>Sample events for the CampusLink demo</Text>
+              {!!cloudError && <LoadProblem message={cloudError} onRetry={retryLoading} />}
+              {activitiesLoading && <LoadingNotice message="Loading campus activities..." />}
+              {!activitiesLoading && activities.length ? activities.slice(0, 3).map(cardFor) : !activitiesLoading && !cloudError &&
+                <EmptyState icon="calendar" title="No activities yet"
+                  description="Be the first to bring students together. Create an activity to get started."
+                  onAction={() => navigate('Create')} actionText="Create an activity" />}
             </>}
 
             {tab === 'Explore' && <>
@@ -427,9 +790,29 @@ export default function App() {
                 {categories.map((item) => <CategoryPill key={item} name={item}
                   selected={category === item} onPress={() => setCategory(item)} />)}
               </ScrollView>
-              <Text style={styles.resultLabel}>{visibleActivities.length} activities</Text>
-              {visibleActivities.length ? visibleActivities.map(cardFor) :
-                <EmptyState icon="search" title="Nothing found yet" description="Try another search or choose a different category." />}
+              <Text style={styles.filterHeading}>When</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filtersScroll}
+                contentContainerStyle={styles.filtersRow}>
+                {['Upcoming', 'Past', 'All dates', 'No date'].map((item) =>
+                  <CategoryPill key={item} name={item} selected={dateFilter === item}
+                    onPress={() => setDateFilter(item)} />)}
+              </ScrollView>
+              <Text style={styles.filterHeading}>Availability</Text>
+              <View style={styles.filterAvailabilityRow}>
+                {['All spots', 'Spots available'].map((item) =>
+                  <CategoryPill key={item} name={item} selected={availabilityFilter === item}
+                    onPress={() => setAvailabilityFilter(item)} />)}
+              </View>
+              <View style={styles.filterResultRow}>
+                <Text style={styles.resultLabel}>{visibleActivities.length} activities</Text>
+                <Pressable onPress={() => { setSearch(''); setCategory('All'); setDateFilter('Upcoming'); setAvailabilityFilter('All spots') }}>
+                  <Text style={styles.resetFilters}>Reset filters</Text>
+                </Pressable>
+              </View>
+              {!!cloudError && <LoadProblem message={cloudError} onRetry={retryLoading} />}
+              {activitiesLoading && <LoadingNotice message="Finding activities..." />}
+              {!activitiesLoading && !cloudError && (visibleActivities.length ? visibleActivities.map(cardFor) :
+                <EmptyState icon="search" title="No matching activities" description="Try All dates, another category, or reset your filters." />)}
             </>}
 
             {tab === 'Create' && <>
@@ -452,19 +835,38 @@ export default function App() {
                 <Text style={styles.inputLabel}>Location</Text>
                 <TextInput style={styles.formInput} value={newLocation} onChangeText={setNewLocation}
                   placeholder="e.g. Student Union" placeholderTextColor="#91A1B6" maxLength={90} />
-                <Text style={styles.inputLabel}>When</Text>
-                <TextInput style={styles.formInput} value={newTime} onChangeText={setNewTime}
-                  placeholder="e.g. Friday at 6:00 PM" placeholderTextColor="#91A1B6" maxLength={80} />
+                <Text style={styles.inputLabel}>Date and time</Text>
+                <Text style={styles.dateValue}>{dateLabel(newDate)}</Text>
+                <View style={styles.dateActions}>
+                  <Pressable style={styles.dateButton} onPress={() => setCreatePicker('date')}><Text style={styles.dateButtonText}>Choose date</Text></Pressable>
+                  <Pressable style={styles.dateButton} onPress={() => setCreatePicker('time')}><Text style={styles.dateButtonText}>Choose time</Text></Pressable>
+                </View>
+                {!!createPicker && <DateTimePicker value={newDate} mode={createPicker} display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  minimumDate={createPicker === 'date' ? new Date() : undefined}
+                  onChange={(event, chosen) => {
+                    if (Platform.OS !== 'ios') setCreatePicker(null)
+                    if (event.type === 'dismissed' || !chosen) return
+                    setNewDate((previous) => {
+                      const next = new Date(previous)
+                      if (createPicker === 'date') next.setFullYear(chosen.getFullYear(), chosen.getMonth(), chosen.getDate())
+                      else next.setHours(chosen.getHours(), chosen.getMinutes(), 0, 0)
+                      return next
+                    })
+                  }} />}
+                {Platform.OS === 'ios' && !!createPicker && <Pressable style={styles.dateDone} onPress={() => setCreatePicker(null)}><Text style={styles.dateButtonText}>Done</Text></Pressable>}
+                <Text style={styles.inputLabel}>Maximum participants (1-100)</Text>
+                <TextInput style={styles.formInput} value={newCapacity} onChangeText={setNewCapacity}
+                  keyboardType="number-pad" maxLength={3} placeholder="e.g. 10" />
                 <Text style={styles.inputLabel}>Description</Text>
                 <TextInput style={[styles.formInput, styles.multilineInput]} value={newDescription}
                   onChangeText={setNewDescription} multiline textAlignVertical="top"
                   placeholder="Tell people what to expect..." placeholderTextColor="#91A1B6" maxLength={400} />
                 {!!createError && <Text style={styles.formError}>{createError}</Text>}
-                <Pressable onPress={handleCreate} style={({ pressed }) => [styles.createButton, pressed && styles.pressed]}>
-                  <Icon name="plus" color={C.white} size={20} />
-                  <Text style={styles.createButtonText}>Post activity</Text>
+                <Pressable disabled={creatingActivity} onPress={handleCreate} style={({ pressed }) => [styles.createButton, (pressed || creatingActivity) && styles.pressed]}>
+                  {creatingActivity ? <ActivityIndicator color={C.white} /> : <Icon name="plus" color={C.white} size={20} />}
+                  <Text style={styles.createButtonText}>{creatingActivity ? 'Posting activity...' : 'Post activity'}</Text>
                 </Pressable>
-                <Text style={styles.createNote}>Demo mode: new activities are not saved to the cloud yet.</Text>
+                <Text style={styles.createNote}>New activities are shared with signed-in CampusLink users.</Text>
               </View>
             </>}
 
@@ -474,37 +876,49 @@ export default function App() {
                 <Text style={styles.sectionCaption}>Your plans, all in one place</Text>
               </View>
               <View style={styles.activityTabs}>
-                {['Joined', 'Saved'].map((item) => <Pressable key={item}
+                {['Joined', 'Created', 'Saved'].map((item) => <Pressable key={item}
                   onPress={() => setActivityView(item)} style={[styles.activityTab, activityView === item && styles.activityTabSelected]}>
                   <Text style={[styles.activityTabText, activityView === item && styles.activityTabTextSelected]}>
-                    {item} ({item === 'Joined' ? joined.length : saved.length})
+                    {item} ({item === 'Joined' ? joined.length : item === 'Created' ? createdCount : validSavedCount})
                   </Text>
                 </Pressable>)}
               </View>
-              {myActivities.length ? myActivities.map(cardFor) :
-                <EmptyState icon={activityView === 'Joined' ? 'calendar' : 'bookmark'}
-                  title={activityView === 'Joined' ? 'No plans just yet' : 'Nothing saved yet'}
+              {!!cloudError && <LoadProblem message={cloudError} onRetry={retryLoading} />}
+              {activitiesLoading || (activityView === 'Saved' && !preferencesLoaded && !preferencesError) ?
+                <LoadingNotice message="Loading your activities..." /> : !cloudError && (myActivities.length ? myActivities.map(cardFor) :
+                <EmptyState icon={activityView === 'Saved' ? 'bookmark' : 'calendar'}
+                  title={activityView === 'Joined' ? 'No plans just yet' : activityView === 'Created' ? 'No activities created yet' : 'Nothing saved yet'}
                   description={activityView === 'Joined'
                     ? 'Find an activity you like and tap Join to see it here.'
+                    : activityView === 'Created' ? 'Create your first activity to see it here.'
                     : 'Bookmark interesting activities to find them again.'}
-                  onAction={() => navigate('Explore')} actionText="Explore activities" />}
+                  onAction={() => navigate('Explore')} actionText="Explore activities" />)}
             </>}
 
             {tab === 'Profile' && <>
+              {!!profileLoadError && <LoadProblem message={profileLoadError} onRetry={retryLoading} />}
+              {!!preferencesError && <LoadProblem message={preferencesError} onRetry={retryLoading} />}
+              {profileLoading && <LoadingNotice message="Loading your profile..." />}
               <View style={styles.profileTop}>
                 <View style={styles.profileAvatar}><Text style={styles.profileInitial}>{firstName[0]?.toUpperCase() || 'C'}</Text></View>
                 <Text style={styles.profileName}>{fullName}</Text>
                 <Text style={styles.profileEmail}>{user.email}</Text>
+                {!!profile.university && <Text style={styles.profileDetail}>{profile.university}</Text>}
+                {!!profile.major && <Text style={styles.profileDetail}>{profile.major}</Text>}
+                {!!profile.bio && <Text style={styles.profileBio}>{profile.bio}</Text>}
+                <Pressable onPress={openProfileEditor} style={styles.editProfileButton}>
+                  <Text style={styles.editProfileText}>Edit profile</Text>
+                </Pressable>
                 <View style={styles.profileStats}>
                   <View style={styles.profileStat}><Text style={styles.statNumber}>{joined.length}</Text><Text style={styles.statLabel}>Joined</Text></View>
                   <View style={styles.statDivider} />
-                  <View style={styles.profileStat}><Text style={styles.statNumber}>{saved.length}</Text><Text style={styles.statLabel}>Saved</Text></View>
+                  <View style={styles.profileStat}><Text style={styles.statNumber}>{validSavedCount}</Text><Text style={styles.statLabel}>Saved</Text></View>
                   <View style={styles.statDivider} />
                   <View style={styles.profileStat}><Text style={styles.statNumber}>{createdCount}</Text><Text style={styles.statLabel}>Created</Text></View>
                 </View>
               </View>
               <View style={styles.profileActions}>
-                <Pressable style={styles.profileAction} onPress={() => navigate('Activities')}>
+                <Pressable style={styles.profileAction} onPress={() => { setActivityView('Created'); navigate('Activities') }}>
                   <View style={styles.profileActionLeft}><Icon name="calendar" size={20} color={C.blue} /><Text style={styles.profileActionText}>My activities</Text></View>
                   <Icon name="arrow" size={19} color={C.gray} />
                 </Pressable>
@@ -539,6 +953,7 @@ export default function App() {
         <Modal visible={!!selectedEvent} animationType="slide" transparent onRequestClose={() => setSelectedEvent(null)}>
           <View style={styles.modalBackdrop}>
             <View style={styles.modalSheet}>
+              <ScrollView style={{ maxHeight: '90%' }} contentContainerStyle={{ paddingBottom: 12 }}>
               <View style={styles.modalTop}>
                 <Text style={styles.modalHeading}>Activity details</Text>
                 <Pressable onPress={() => setSelectedEvent(null)} style={styles.modalClose}>
@@ -552,12 +967,129 @@ export default function App() {
                 <View style={styles.modalInfo}><Icon name="pin" size={19} color={C.blue} /><Text style={styles.modalInfoText}>{selectedEvent.location}</Text></View>
                 <View style={styles.modalInfo}><Icon name="clock" size={19} color={C.blue} /><Text style={styles.modalInfoText}>{selectedEvent.time}</Text></View>
                 <View style={styles.modalInfo}><Icon name="users" size={19} color={C.blue} /><Text style={styles.modalInfoText}>Hosted by {selectedEvent.host}</Text></View>
-                <Pressable onPress={() => toggle(setJoined, selectedEvent.id)}
+                {!selectedEvent.demo && selectedEvent.createdBy === user.uid && (
+                  <View style={styles.ownerActions}>
+                    <Pressable style={styles.ownerEditButton}
+                      onPress={() => openEdit(activities.find((item) => item.id === selectedEvent.id) || selectedEvent)}>
+                      <Text style={styles.ownerEditText}>Edit activity</Text>
+                    </Pressable>
+                    <Pressable style={styles.ownerDeleteButton}
+                      onPress={() => confirmDelete(selectedEvent)}>
+                      <Text style={styles.ownerDeleteText}>Delete</Text>
+                    </Pressable>
+                  </View>
+                )}
+                {!selectedEvent.demo && (
+                  <Text style={styles.capacitySummary}>{spotsText(activities.find((item) => item.id === selectedEvent.id) || selectedEvent)}</Text>
+                )}
+                <View style={styles.participantsBlock}>
+                  <Text style={styles.participantsHeading}>Participants ({participantsFor(activities.find((item) => item.id === selectedEvent.id) || selectedEvent).length})</Text>
+                  {participantsFor(activities.find((item) => item.id === selectedEvent.id) || selectedEvent).length ?
+                    participantsFor(activities.find((item) => item.id === selectedEvent.id) || selectedEvent).map((person) => (
+                      <View key={person.uid} style={styles.participantRow}>
+                        <View style={styles.participantAvatar}><Text style={styles.participantInitial}>{person.name[0]?.toUpperCase() || 'S'}</Text></View>
+                        <Text style={styles.participantName}>{person.name}{person.uid === user.uid ? ' (You)' : ''}</Text>
+                      </View>
+                    )) : <Text style={styles.modalDescription}>Nobody has joined yet. Be the first!</Text>}
+                </View>
+                <Pressable onPress={() => handleJoin(activities.find((item) => item.id === selectedEvent.id) || selectedEvent)}
+                  disabled={busyActivity === selectedEvent.id}
                   style={[styles.createButton, joined.includes(selectedEvent.id) && { backgroundColor: C.green }]}>
-                  <Icon name={joined.includes(selectedEvent.id) ? 'check' : 'plus'} size={21} color={C.white} />
-                  <Text style={styles.createButtonText}>{joined.includes(selectedEvent.id) ? 'Joined - Tap to leave' : 'Join this activity'}</Text>
+                  {busyActivity === selectedEvent.id ? <ActivityIndicator color={C.white} /> : <Icon name={joined.includes(selectedEvent.id) ? 'check' : 'plus'} size={21} color={C.white} />}
+                  <Text style={styles.createButtonText}>{busyActivity === selectedEvent.id ? 'Updating...' : joined.includes(selectedEvent.id) ? 'Joined - Tap to leave' : (!selectedEvent.demo && capacityFor(activities.find((item) => item.id === selectedEvent.id) || selectedEvent) && Object.keys((activities.find((item) => item.id === selectedEvent.id) || selectedEvent).participants || {}).length >= capacityFor(activities.find((item) => item.id === selectedEvent.id) || selectedEvent) ? 'Activity full' : 'Join this activity')}</Text>
                 </Pressable>
               </>}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+        <Modal visible={editingProfile} animationType="slide" transparent
+          onRequestClose={() => { if (!savingProfile) setEditingProfile(false) }}>
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalSheet}>
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+                <ScrollView style={{ maxHeight: '85%' }} keyboardShouldPersistTaps="handled">
+                  <View style={styles.modalTop}>
+                    <Text style={styles.modalHeading}>Edit profile</Text>
+                    <Pressable disabled={savingProfile} onPress={() => setEditingProfile(false)} style={styles.modalClose}>
+                      <Icon name="close" size={21} color={C.navy} />
+                    </Pressable>
+                  </View>
+                  <Text style={[styles.inputLabel, { marginTop: 22 }]}>Name</Text>
+                  <TextInput style={styles.formInput} value={profileName} onChangeText={setProfileName} maxLength={80} />
+                  <Text style={styles.inputLabel}>University</Text>
+                  <TextInput style={styles.formInput} value={profileUniversity} onChangeText={setProfileUniversity}
+                    placeholder="e.g. University of North Texas" maxLength={100} />
+                  <Text style={styles.inputLabel}>Major</Text>
+                  <TextInput style={styles.formInput} value={profileMajor} onChangeText={setProfileMajor}
+                    placeholder="e.g. Computer Science" maxLength={100} />
+                  <Text style={styles.inputLabel}>Bio</Text>
+                  <TextInput style={[styles.formInput, styles.multilineInput]} value={profileBio}
+                    onChangeText={setProfileBio} placeholder="A little about you..." maxLength={300}
+                    multiline textAlignVertical="top" />
+                  {!!profileError && <Text style={styles.formError}>{profileError}</Text>}
+                  <Pressable disabled={savingProfile} onPress={saveProfile}
+                    style={[styles.createButton, savingProfile && { opacity: 0.6 }]}>
+                    <Text style={styles.createButtonText}>{savingProfile ? 'Saving...' : 'Save profile'}</Text>
+                  </Pressable>
+                </ScrollView>
+              </KeyboardAvoidingView>
+            </View>
+          </View>
+        </Modal>
+        <Modal visible={!!editingEvent} animationType="slide" transparent onRequestClose={() => { if (!savingEdit) setEditingEvent(null) }}>
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalSheet}>
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+                <ScrollView style={{ maxHeight: '87%' }} keyboardShouldPersistTaps="handled">
+                  <View style={styles.modalTop}>
+                    <Text style={styles.modalHeading}>Edit activity</Text>
+                    <Pressable disabled={savingEdit} onPress={() => setEditingEvent(null)} style={styles.modalClose}>
+                      <Icon name="close" size={21} color={C.navy} />
+                    </Pressable>
+                  </View>
+                  <Text style={[styles.inputLabel, { marginTop: 20 }]}>Title</Text>
+                  <TextInput style={styles.formInput} value={editTitle} onChangeText={setEditTitle} maxLength={80} />
+                  <Text style={styles.inputLabel}>Category</Text>
+                  <View style={styles.createCategories}>
+                    {categories.slice(1).map((item) => <Pressable key={item} onPress={() => setEditCategory(item)}
+                      style={[styles.createCategory, editCategory === item && styles.createCategorySelected]}>
+                      <Text style={[styles.createCategoryText, editCategory === item && styles.createCategoryTextSelected]}>{item}</Text>
+                    </Pressable>)}
+                  </View>
+                  <Text style={styles.inputLabel}>Location</Text>
+                  <TextInput style={styles.formInput} value={editLocation} onChangeText={setEditLocation} maxLength={90} />
+                  <Text style={styles.inputLabel}>Date and time</Text>
+                  <Text style={styles.dateValue}>{dateLabel(editDate)}</Text>
+                  <View style={styles.dateActions}>
+                    <Pressable style={styles.dateButton} onPress={() => setEditPicker('date')}><Text style={styles.dateButtonText}>Choose date</Text></Pressable>
+                    <Pressable style={styles.dateButton} onPress={() => setEditPicker('time')}><Text style={styles.dateButtonText}>Choose time</Text></Pressable>
+                  </View>
+                  {!!editPicker && <DateTimePicker value={editDate} mode={editPicker} display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                    minimumDate={editPicker === 'date' ? new Date() : undefined}
+                    onChange={(event, chosen) => {
+                      if (Platform.OS !== 'ios') setEditPicker(null)
+                      if (event.type === 'dismissed' || !chosen) return
+                      setEditDate((previous) => {
+                        const next = new Date(previous)
+                        if (editPicker === 'date') next.setFullYear(chosen.getFullYear(), chosen.getMonth(), chosen.getDate())
+                        else next.setHours(chosen.getHours(), chosen.getMinutes(), 0, 0)
+                        return next
+                      })
+                    }} />}
+                  {Platform.OS === 'ios' && !!editPicker && <Pressable style={styles.dateDone} onPress={() => setEditPicker(null)}><Text style={styles.dateButtonText}>Done</Text></Pressable>}
+                  <Text style={styles.inputLabel}>Maximum participants (1-100)</Text>
+                  <TextInput style={styles.formInput} value={editCapacity} onChangeText={setEditCapacity}
+                    keyboardType="number-pad" maxLength={3} />
+                  <Text style={styles.inputLabel}>Description</Text>
+                  <TextInput style={[styles.formInput, styles.multilineInput]} value={editDescription}
+                    onChangeText={setEditDescription} maxLength={400} multiline textAlignVertical="top" />
+                  {!!editError && <Text style={styles.formError}>{editError}</Text>}
+                  <Pressable disabled={savingEdit} onPress={saveEdit} style={[styles.createButton, savingEdit && { opacity: 0.6 }]}>
+                    <Text style={styles.createButtonText}>{savingEdit ? 'Saving...' : 'Save changes'}</Text>
+                  </Pressable>
+                </ScrollView>
+              </KeyboardAvoidingView>
             </View>
           </View>
         </Modal>
@@ -567,6 +1099,28 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
+  loadingNotice: { paddingVertical: 28, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 11 },
+  loadingNoticeText: { fontFamily: 'PlusJakartaSans_500Medium', fontSize: 12, color: C.gray },
+  loadProblem: { backgroundColor: '#FFF1F2', padding: 15, borderRadius: 14, marginBottom: 15, borderWidth: 1, borderColor: '#F4C6CC' },
+  loadProblemText: { fontFamily: 'PlusJakartaSans_500Medium', fontSize: 12, color: '#9A2638', lineHeight: 19 },
+  retryButton: { alignSelf: 'flex-start', backgroundColor: C.white, borderRadius: 9, paddingHorizontal: 14, paddingVertical: 9, marginTop: 11 },
+  retryText: { color: C.blue, fontFamily: 'PlusJakartaSans_700Bold', fontSize: 12 },
+  dateValue: { fontFamily: 'PlusJakartaSans_600SemiBold', fontSize: 13, color: C.navy, marginBottom: 12 },
+  dateActions: { flexDirection: 'row', gap: 10, marginBottom: 18 },
+  dateButton: { flex: 1, backgroundColor: '#E5EEFF', paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
+  dateDone: { alignItems: 'center', marginBottom: 16, paddingVertical: 10 },
+  dateButtonText: { color: C.blue, fontFamily: 'PlusJakartaSans_700Bold', fontSize: 12 },
+  capacityCard: { fontFamily: 'PlusJakartaSans_700Bold', fontSize: 11, color: C.green, marginTop: 7 },
+  capacitySummary: { fontFamily: 'PlusJakartaSans_700Bold', fontSize: 13, color: C.blue, marginTop: 18 },
+  profileDetail: { fontFamily: 'PlusJakartaSans_500Medium', fontSize: 12, color: C.gray, marginTop: 7 },
+  profileBio: { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 12, color: C.navy, lineHeight: 19, textAlign: 'center', marginTop: 12, paddingHorizontal: 24 },
+  editProfileButton: { marginTop: 18, backgroundColor: '#E5EEFF', paddingHorizontal: 25, paddingVertical: 11, borderRadius: 12 },
+  editProfileText: { fontFamily: 'PlusJakartaSans_700Bold', fontSize: 12, color: C.blue },
+  ownerActions: { flexDirection: 'row', gap: 10, marginTop: 20 },
+  ownerEditButton: { flex: 1, backgroundColor: '#E5EEFF', paddingVertical: 13, borderRadius: 12, alignItems: 'center' },
+  ownerEditText: { fontFamily: 'PlusJakartaSans_700Bold', color: C.blue, fontSize: 12 },
+  ownerDeleteButton: { backgroundColor: '#FFF0F1', paddingVertical: 13, paddingHorizontal: 22, borderRadius: 12 },
+  ownerDeleteText: { fontFamily: 'PlusJakartaSans_700Bold', color: '#C43E53', fontSize: 12 },
   container: { flex: 1, backgroundColor: C.background },
   page: { flex: 1 },
   loading: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: C.background },
@@ -578,18 +1132,18 @@ const styles = StyleSheet.create({
   brandTitleBlue: { color: C.blue },
   topAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#E5EEFF', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#CADBFA' },
   topAvatarText: { fontFamily: 'PlusJakartaSans_800ExtraBold', color: C.blue, fontSize: 15 },
-  pageContent: { paddingHorizontal: 17, paddingTop: 24, paddingBottom: 24, flexGrow: 1 },
-  greetingBlock: { marginHorizontal: 3, marginBottom: 19 },
+  pageContent: { paddingHorizontal: 18, paddingTop: 25, paddingBottom: 38, flexGrow: 1 },
+  greetingBlock: { marginHorizontal: 2, marginBottom: 23 },
   eyebrow: { fontFamily: 'PlusJakartaSans_700Bold', color: C.blue, letterSpacing: 1.6, fontSize: 10, marginBottom: 7 },
-  greeting: { fontFamily: 'PlusJakartaSans_800ExtraBold', fontSize: 29, color: C.navy, letterSpacing: -1.2 },
-  greetingSub: { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 13, color: C.gray, marginTop: 7, lineHeight: 21 },
+  greeting: { fontFamily: 'PlusJakartaSans_800ExtraBold', fontSize: 30, color: C.navy, letterSpacing: -1.1 },
+  greetingSub: { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 13, color: C.gray, marginTop: 9, lineHeight: 21 },
   storiesScroll: { marginHorizontal: -17, marginBottom: 22 },
   storiesRow: { paddingHorizontal: 17, gap: 15 },
   story: { alignItems: 'center', width: 65 },
   storyRing: { borderWidth: 2, borderRadius: 40, width: 61, height: 61, padding: 3, alignItems: 'center', justifyContent: 'center' },
   storyCircle: { width: '100%', height: '100%', borderRadius: 40, alignItems: 'center', justifyContent: 'center' },
   storyText: { fontFamily: 'PlusJakartaSans_600SemiBold', color: C.navy, fontSize: 10, marginTop: 7 },
-  featuredBanner: { backgroundColor: C.navy, minHeight: 178, borderRadius: 23, marginBottom: 28, overflow: 'hidden', padding: 22, justifyContent: 'center' },
+  featuredBanner: { backgroundColor: C.navy, minHeight: 183, borderRadius: 24, marginBottom: 30, overflow: 'hidden', padding: 23, justifyContent: 'center', elevation: 3, shadowColor: C.navy, shadowOpacity: 0.12, shadowRadius: 12, shadowOffset: { width: 0, height: 5 } },
   featuredCircle: { position: 'absolute', right: -60, top: -67, width: 190, height: 190, borderRadius: 95, borderWidth: 36, borderColor: '#1F61D1', opacity: 0.65 },
   featuredCircleSmall: { position: 'absolute', right: 30, bottom: -43, height: 90, width: 90, borderRadius: 45, backgroundColor: '#4266B7', opacity: 0.52 },
   featuredCopy: { alignItems: 'flex-start' },
@@ -597,76 +1151,80 @@ const styles = StyleSheet.create({
   featuredTitle: { fontFamily: 'PlusJakartaSans_800ExtraBold', color: C.white, fontSize: 22, lineHeight: 30, letterSpacing: -0.7 },
   featuredLink: { backgroundColor: C.white, borderRadius: 12, paddingVertical: 9, paddingHorizontal: 13, marginTop: 16, flexDirection: 'row', alignItems: 'center', gap: 9 },
   featuredLinkText: { fontFamily: 'PlusJakartaSans_700Bold', fontSize: 11, color: C.blue },
-  sectionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
-  sectionTitle: { fontFamily: 'PlusJakartaSans_800ExtraBold', color: C.navy, fontSize: 22, letterSpacing: -0.7 },
+  sectionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, gap: 12 },
+  sectionTitle: { fontFamily: 'PlusJakartaSans_800ExtraBold', color: C.navy, fontSize: 23, letterSpacing: -0.7 },
   sectionCaption: { fontFamily: 'PlusJakartaSans_400Regular', color: C.gray, fontSize: 12, lineHeight: 19, marginTop: 4 },
   seeAll: { fontFamily: 'PlusJakartaSans_700Bold', fontSize: 12, color: C.blue },
-  eventCard: { backgroundColor: C.white, borderRadius: 20, overflow: 'hidden', borderWidth: 1, borderColor: C.border, marginBottom: 18, elevation: 2, shadowColor: C.navy, shadowOpacity: 0.04, shadowRadius: 9, shadowOffset: { width: 0, height: 3 } },
-  eventTop: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 14 },
-  hostAvatar: { width: 39, height: 39, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  eventCard: { backgroundColor: C.white, borderRadius: 23, overflow: 'hidden', borderWidth: 1, borderColor: '#E2EAF5', marginBottom: 20, elevation: 4, shadowColor: C.navy, shadowOpacity: 0.09, shadowRadius: 15, shadowOffset: { width: 0, height: 5 } },
+  eventTop: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 16 },
+  hostAvatar: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
   hostTextBox: { flex: 1, marginLeft: 10 },
   hostName: { fontFamily: 'PlusJakartaSans_700Bold', color: C.navy, fontSize: 12 },
   hostSubtitle: { fontFamily: 'PlusJakartaSans_400Regular', color: C.gray, fontSize: 10, marginTop: 2 },
   iconButton: { padding: 7 },
-  eventArtwork: { height: 146, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  eventArtwork: { height: 155, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   artCircleLarge: { position: 'absolute', width: 205, height: 205, borderRadius: 103, right: -50, top: -67, borderWidth: 40, opacity: 0.12 },
   artCircleSmall: { position: 'absolute', width: 77, height: 77, borderRadius: 39, bottom: -32, left: 30, opacity: 0.12 },
   eventArtIcon: { width: 75, height: 75, borderRadius: 22, alignItems: 'center', justifyContent: 'center', elevation: 3, shadowOpacity: 0.12, shadowRadius: 6 },
   artTag: { position: 'absolute', bottom: 12, left: 13, backgroundColor: C.white, paddingVertical: 5, paddingHorizontal: 10, borderRadius: 10 },
   artTagText: { fontFamily: 'PlusJakartaSans_700Bold', fontSize: 10 },
-  eventBody: { paddingHorizontal: 14, paddingBottom: 16 },
-  eventActions: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, gap: 19 },
-  actionButton: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  eventBody: { paddingHorizontal: 16, paddingBottom: 19 },
+  eventActions: { flexDirection: 'row', alignItems: 'center', paddingTop: 14, paddingBottom: 11, gap: 16 },
+  actionButton: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 },
   actionLabel: { fontFamily: 'PlusJakartaSans_600SemiBold', fontSize: 11, color: C.navy },
-  miniJoinButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.blue, paddingHorizontal: 13, paddingVertical: 9, borderRadius: 11, gap: 3 },
+  miniJoinButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.blue, paddingHorizontal: 15, paddingVertical: 11, borderRadius: 13, gap: 5, minHeight: 40 },
   miniJoinedButton: { backgroundColor: '#E1F7EB' },
   miniJoinText: { fontFamily: 'PlusJakartaSans_700Bold', fontSize: 11, color: C.white },
-  eventTitle: { fontFamily: 'PlusJakartaSans_800ExtraBold', fontSize: 17, color: C.navy, marginTop: 5 },
-  eventDescription: { fontFamily: 'PlusJakartaSans_400Regular', color: C.gray, fontSize: 12, lineHeight: 19, marginTop: 7, marginBottom: 10 },
-  eventMeta: { flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 5 },
+  eventTitle: { fontFamily: 'PlusJakartaSans_800ExtraBold', fontSize: 18, color: C.navy, marginTop: 6, letterSpacing: -0.35 },
+  eventDescription: { fontFamily: 'PlusJakartaSans_400Regular', color: C.gray, fontSize: 12, lineHeight: 20, marginTop: 9, marginBottom: 11 },
+  eventMeta: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 7 },
   metaText: { fontFamily: 'PlusJakartaSans_500Medium', fontSize: 11, color: C.gray, flexShrink: 1 },
   demoNote: { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 10, color: '#95A2B4', textAlign: 'center', marginVertical: 14 },
   innerHeader: { marginHorizontal: 3, marginBottom: 21 },
-  searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.white, borderWidth: 1, borderColor: C.border, borderRadius: 15, paddingHorizontal: 13, height: 53, gap: 9 },
+  searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.white, borderWidth: 1, borderColor: '#CFDBEC', borderRadius: 17, paddingHorizontal: 15, height: 56, gap: 10, elevation: 1 },
   searchInput: { flex: 1, color: C.navy, fontFamily: 'PlusJakartaSans_500Medium', fontSize: 12 },
+  filterHeading: { fontFamily: 'PlusJakartaSans_700Bold', color: C.navy, fontSize: 12, marginTop: 5 },
+  filterAvailabilityRow: { flexDirection: 'row', gap: 9, marginTop: 12, marginBottom: 18 },
+  filterResultRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  resetFilters: { color: C.blue, fontFamily: 'PlusJakartaSans_700Bold', fontSize: 11, marginBottom: 13 },
   filtersScroll: { marginHorizontal: -17, marginTop: 18, marginBottom: 15 },
   filtersRow: { paddingHorizontal: 17, gap: 9 },
-  categoryPill: { borderRadius: 22, paddingHorizontal: 16, paddingVertical: 11, borderWidth: 1, borderColor: C.border, backgroundColor: C.white },
+  categoryPill: { borderRadius: 23, paddingHorizontal: 17, paddingVertical: 12, borderWidth: 1, borderColor: C.border, backgroundColor: C.white },
   categoryPillSelected: { borderColor: C.blue, backgroundColor: C.blue },
   categoryPillText: { fontFamily: 'PlusJakartaSans_600SemiBold', color: C.gray, fontSize: 11 },
   categoryPillTextSelected: { color: C.white },
   resultLabel: { fontFamily: 'PlusJakartaSans_700Bold', color: C.navy, fontSize: 12, marginBottom: 13, marginLeft: 2 },
-  bottomBar: { backgroundColor: C.white, borderTopColor: C.lightGray, borderTopWidth: 1, flexDirection: 'row', paddingVertical: 8, minHeight: 69, justifyContent: 'space-around' },
+  bottomBar: { backgroundColor: C.white, borderTopColor: C.lightGray, borderTopWidth: 1, flexDirection: 'row', paddingTop: 10, paddingBottom: 9, minHeight: 73, justifyContent: 'space-around' },
   navItem: { width: '20%', alignItems: 'center', justifyContent: 'center', gap: 5 },
-  navCreate: { backgroundColor: C.blue, borderRadius: 15, height: 37, width: 43, alignItems: 'center', justifyContent: 'center', borderBottomWidth: 3, borderBottomColor: '#174795', elevation: 3 },
+  navCreate: { backgroundColor: C.blue, borderRadius: 15, height: 40, width: 45, alignItems: 'center', justifyContent: 'center', borderBottomWidth: 3, borderBottomColor: '#174795', elevation: 3 },
   navLabel: { fontFamily: 'PlusJakartaSans_600SemiBold', fontSize: 9, color: '#8A9AAF' },
   navLabelActive: { color: C.blue },
-  emptyState: { backgroundColor: C.white, borderRadius: 20, borderWidth: 1, borderColor: C.border, padding: 26, alignItems: 'center', marginTop: 7 },
+  emptyState: { backgroundColor: C.white, borderRadius: 22, borderWidth: 1, borderColor: C.border, padding: 30, alignItems: 'center', marginTop: 9 },
   emptyIcon: { backgroundColor: '#E7EFFF', borderRadius: 26, width: 54, height: 54, alignItems: 'center', justifyContent: 'center' },
   emptyTitle: { fontFamily: 'PlusJakartaSans_700Bold', color: C.navy, fontSize: 16, marginTop: 15, textAlign: 'center' },
   emptyDescription: { fontFamily: 'PlusJakartaSans_400Regular', color: C.gray, fontSize: 12, lineHeight: 19, textAlign: 'center', marginTop: 7 },
   emptyAction: { marginTop: 19, backgroundColor: C.blue, paddingHorizontal: 17, paddingVertical: 12, borderRadius: 11 },
   emptyActionText: { fontFamily: 'PlusJakartaSans_700Bold', color: C.white, fontSize: 12 },
-  createCard: { backgroundColor: C.white, borderWidth: 1, borderColor: C.border, borderRadius: 21, padding: 20 },
+  createCard: { backgroundColor: C.white, borderWidth: 1, borderColor: C.border, borderRadius: 23, padding: 22, elevation: 2, shadowColor: C.navy, shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 3 } },
   inputLabel: { fontFamily: 'PlusJakartaSans_700Bold', color: C.navy, fontSize: 12, marginBottom: 9 },
-  formInput: { borderRadius: 12, borderWidth: 1, borderColor: C.border, backgroundColor: '#FAFCFF', padding: 14, fontFamily: 'PlusJakartaSans_500Medium', color: C.navy, fontSize: 12, marginBottom: 19, minHeight: 51 },
+  formInput: { borderRadius: 14, borderWidth: 1, borderColor: '#D3DFEE', backgroundColor: '#FAFCFF', padding: 15, fontFamily: 'PlusJakartaSans_500Medium', color: C.navy, fontSize: 13, marginBottom: 20, minHeight: 53 },
   multilineInput: { minHeight: 115 },
   createCategories: { flexDirection: 'row', flexWrap: 'wrap', gap: 9, marginBottom: 21 },
   createCategory: { borderWidth: 1, borderColor: C.border, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 9 },
   createCategorySelected: { backgroundColor: '#E5EEFF', borderColor: C.blue },
   createCategoryText: { fontFamily: 'PlusJakartaSans_600SemiBold', fontSize: 10, color: C.gray },
   createCategoryTextSelected: { color: C.blue },
-  createButton: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8, backgroundColor: C.blue, minHeight: 52, borderRadius: 13, borderBottomWidth: 3, borderBottomColor: '#164590' },
+  createButton: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 9, backgroundColor: C.blue, minHeight: 54, borderRadius: 14, borderBottomWidth: 3, borderBottomColor: '#164590', paddingHorizontal: 12 },
   createButtonText: { fontFamily: 'PlusJakartaSans_700Bold', fontSize: 13, color: C.white },
   createNote: { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 10, textAlign: 'center', lineHeight: 17, color: C.gray, marginTop: 14 },
   formError: { fontFamily: 'PlusJakartaSans_500Medium', fontSize: 12, color: '#C43E53', marginBottom: 13 },
-  activityTabs: { flexDirection: 'row', padding: 5, backgroundColor: '#E5ECF6', borderRadius: 13, marginBottom: 20 },
+  activityTabs: { flexDirection: 'row', padding: 5, backgroundColor: '#E5ECF6', borderRadius: 15, marginBottom: 22 },
   activityTab: { flex: 1, alignItems: 'center', paddingVertical: 12, borderRadius: 9 },
   activityTabSelected: { backgroundColor: C.white, elevation: 2 },
   activityTabText: { fontFamily: 'PlusJakartaSans_600SemiBold', color: C.gray, fontSize: 12 },
   activityTabTextSelected: { color: C.blue },
-  profileTop: { backgroundColor: C.white, borderWidth: 1, borderColor: C.border, borderRadius: 21, paddingTop: 24, alignItems: 'center', overflow: 'hidden' },
-  profileAvatar: { backgroundColor: C.blue, width: 77, height: 77, borderRadius: 39, alignItems: 'center', justifyContent: 'center' },
+  profileTop: { backgroundColor: C.white, borderWidth: 1, borderColor: C.border, borderRadius: 24, paddingTop: 27, alignItems: 'center', overflow: 'hidden', elevation: 2 },
+  profileAvatar: { backgroundColor: C.blue, width: 82, height: 82, borderRadius: 41, alignItems: 'center', justifyContent: 'center', borderWidth: 4, borderColor: '#E5EEFF' },
   profileInitial: { fontFamily: 'PlusJakartaSans_800ExtraBold', color: C.white, fontSize: 29 },
   profileName: { fontFamily: 'PlusJakartaSans_800ExtraBold', fontSize: 19, color: C.navy, marginTop: 13 },
   profileEmail: { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 12, color: C.gray, marginTop: 5 },
@@ -675,12 +1233,12 @@ const styles = StyleSheet.create({
   statNumber: { fontFamily: 'PlusJakartaSans_800ExtraBold', fontSize: 18, color: C.navy },
   statLabel: { fontFamily: 'PlusJakartaSans_500Medium', fontSize: 10, color: C.gray, marginTop: 3 },
   statDivider: { backgroundColor: C.lightGray, height: 28, width: 1 },
-  profileActions: { backgroundColor: C.white, borderWidth: 1, borderColor: C.border, borderRadius: 18, marginTop: 20, overflow: 'hidden' },
-  profileAction: { padding: 17, borderBottomWidth: 1, borderBottomColor: C.lightGray, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  profileActions: { backgroundColor: C.white, borderWidth: 1, borderColor: C.border, borderRadius: 19, marginTop: 22, overflow: 'hidden' },
+  profileAction: { paddingVertical: 19, paddingHorizontal: 18, borderBottomWidth: 1, borderBottomColor: C.lightGray, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   profileActionLeft: { flexDirection: 'row', alignItems: 'center', gap: 13 },
   profileActionText: { fontFamily: 'PlusJakartaSans_600SemiBold', fontSize: 12, color: C.navy },
   modalBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(8,21,42,0.42)' },
-  modalSheet: { backgroundColor: C.white, padding: 23, paddingBottom: 35, borderTopLeftRadius: 27, borderTopRightRadius: 27 },
+  modalSheet: { backgroundColor: C.white, padding: 24, paddingBottom: 38, borderTopLeftRadius: 29, borderTopRightRadius: 29 },
   modalTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   modalHeading: { fontFamily: 'PlusJakartaSans_700Bold', fontSize: 14, color: C.gray },
   modalClose: { padding: 5 },
@@ -690,4 +1248,10 @@ const styles = StyleSheet.create({
   modalDescription: { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 13, lineHeight: 22, color: C.gray, marginVertical: 13 },
   modalInfo: { flexDirection: 'row', alignItems: 'center', gap: 11, marginTop: 12 },
   modalInfoText: { flex: 1, fontFamily: 'PlusJakartaSans_500Medium', fontSize: 12, color: C.navy },
+  participantsBlock: { marginTop: 22, marginBottom: 22, paddingTop: 15, borderTopWidth: 1, borderTopColor: C.border },
+  participantsHeading: { fontFamily: 'PlusJakartaSans_700Bold', fontSize: 15, color: C.navy, marginBottom: 12 },
+  participantRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10, gap: 10 },
+  participantAvatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#E5EEFF', alignItems: 'center', justifyContent: 'center' },
+  participantInitial: { fontFamily: 'PlusJakartaSans_700Bold', color: C.blue },
+  participantName: { fontFamily: 'PlusJakartaSans_500Medium', fontSize: 12, color: C.navy },
 })
